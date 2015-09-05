@@ -1,0 +1,7 @@
+(compile -s -O3 -d1 "onion.scm" -j onion)
+(compile -s -O3 -d0 "onion.import.scm")
+
+(install-extension
+ 'onion
+ '("onion.so" "onion.import.so")
+ '((version 0.0.1)))
