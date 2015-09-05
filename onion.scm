@@ -53,14 +53,13 @@
   (define (prep-request in out)
     (let* ((request (read-request in))
            (uri (request-uri request)))
-      (alist->hash-table
-       `((path . ,(conc "/" (string-join (cdr (uri-path uri)) "/")))
-         (query . ,(uri-query uri))
-         (headers . ,(request-headers request))
-         (method . ,(request-method request))
-         (response . ,(make-response port: out))
-         (output . ,out)
-         (input . ,in)))))
+      `((path . ,(conc "/" (string-join (cdr (uri-path uri)) "/")))
+        (query . ,(uri-query uri))
+        (headers . ,(request-headers request))
+        (method . ,(request-method request))
+        (response . ,(make-response port: out))
+        (output . ,out)
+        (input . ,in))))
 
   (define (group-rules rules)
     (fold (lambda (rule ht)
@@ -79,16 +78,16 @@
 
   (define (wrap-routes rules)
     (lambda (req)
-      (let* ((path (hash-table-ref req 'path))
-             (method (hash-table-ref req 'method))
+      (let* ((path (alist-ref 'path req))
+             (method (alist-ref 'method req))
              (rules (group-rules rules))
-             (output (hash-table-ref req 'output))
+             (output (alist-ref 'output req))
              (handler
               (route-dispatch path (hash-table-ref rules method))))
         (if handler
             (begin
-              (hash-table-set! req 'params (car handler))
-              (let ((res (hash-table-ref req 'response))
+              (cons `(params . ,(car handler)) req)
+              (let ((res (alist-ref 'response req))
                     (result ((cadr handler) req)))
                 ;; (print result)
                 (write-response res)
