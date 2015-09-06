@@ -1,32 +1,54 @@
 
 (module onion
-    (defroutes run wrap-routes GET parse-url)
+    (defroutes run wrap-routes)
 
   (import scheme chicken)
 
   (use tcp6 intarweb uri-common posix srfi-13 srfi-69 medea srfi-1 extras data-structures)
 
 
-  (define (parse-url* pattern #!optional (index 0))
-    (let* ((param? (string-prefix? ":" pattern 0 1 index))
-           (idx (string-index pattern (if param? #\/ #\:) index)))
-      (cons (if param? 'param 'static)
-            (if idx
-                (substring pattern index idx)
-                (substring pattern index (string-length pattern))))))
+  (begin-for-syntax
 
+   (require-extension matchable data-structures)
 
-  (define (parse-url pattern)
-    (let ((segments '())
-          (loop (void)))
-      (set! loop (lambda (idx)
-                   (if (< idx (string-length pattern))
-                       (let ((token (parse-url* pattern idx)))
-                         (set! segments
-                           (cons token (loop (+ idx (string-length (cdr token))))))))
-                   segments))
-      (loop 0)))
+   (define (parse-url pattern)
+     (let* ((param? (string-prefix? ":" pattern))
+            (idx (string-index pattern (if param? #\/ #\:))))
+       (if idx
+           (cons
+            (if param?
+                `(param . ,(string->symbol (substring/shared pattern 1 idx)))
+                `(static . , (substring/shared pattern 0 idx)))
+            (parse-url (substring/shared pattern idx)))
+           (if param?
+               `((param . ,(string->symbol (substring/shared pattern 1))))
+               `((static . ,pattern))))))
 
+   (define (deep-let-1 pattern transformer)
+     (if (pair? pattern)
+         (let ((p (car pattern)))
+           (if (keyword? p)
+               (let ((p (string->symbol (keyword->string p))))
+                 (append
+                  (deep-let-1 (cadr pattern) `(compose (lambda (alist) (if alist (alist-ref ',p alist) #f)) ,transformer))
+                  (deep-let-1 (cddr pattern) transformer)))
+               (if (symbol? p)
+                   (append `((,p . (compose (lambda (alist) (if alist (alist-ref ',p alist) #f)) ,transformer)))
+                           (deep-let-1 (cdr pattern) transformer))
+                   '())))
+         '()))
+
+   (define (deep-let pattern datum exps)
+     (let ((vars (deep-let-1 pattern 'identity)))
+       `(apply (lambda ,(map car vars) ,@exps)
+               (map (lambda (transform) (transform ,datum)) (list ,@(map cdr vars))))))
+
+   (define (expand-route form)
+     (match form
+       ((method url destruct handler)
+        `(list ',method ',(parse-url url) (lambda (req) ,(deep-let destruct 'req (list handler)))))
+       ((method url handler)
+        `(list ',method ',(parse-url url) (lambda (req) ,handler))))))
 
   (define (match-url url segments #!optional (params '()))
     (if (pair? segments)
@@ -77,39 +99,33 @@
         #f))
 
   (define (wrap-routes rules)
-    (lambda (req)
-      (let* ((path (alist-ref 'path req))
-             (method (alist-ref 'method req))
-             (rules (group-rules rules))
-             (output (alist-ref 'output req))
-             (handler
-              (route-dispatch path (hash-table-ref rules method))))
-        (if handler
-            (begin
-              (cons `(params . ,(car handler)) req)
-              (let ((res (alist-ref 'response req))
-                    (result ((cadr handler) req)))
-                ;; (print result)
-                (write-response res)
-                (if (string? result)
-                    (write-string result #f output)
-                    (write-string (json->string result) #f output))
-                (finish-response-body res)))))))
-
-  (define-syntax GET
-    (er-macro-transformer
-     (lambda (form rename compare)
-       (let ((url (second form))
-             (req (third form))
-             (handler (fourth form)))
-         `(list 'GET (parse-url ,url) (lambda (req) ,handler))))))
+    (let ((rules (group-rules rules)))
+      (lambda (req)
+        (let* ((path (alist-ref 'path req))
+               (method (alist-ref 'method req))
+               (output (alist-ref 'output req))
+               (handler
+                (begin
+                  ;; (print (hash-table->alist rules))
+                  (route-dispatch path (hash-table-ref rules method)))))
+          (if handler
+              (begin
+                (let* ((req (cons `(params . ,(car handler)) req))
+                       (res (alist-ref 'response req))
+                       (result ((cadr handler) (append (car handler) req))))
+                  ;; (print result)
+                  (write-response res)
+                  (if (string? result)
+                      (write-string result #f output)
+                      (write-string (json->string result) #f output))
+                  (finish-response-body res))))))))
 
   (define-syntax defroutes
     (er-macro-transformer
      (lambda (form rename compare)
-       (let ((name (cadr form))
-             (rules (cddr form)))
-         `(define ,name (wrap-routes (list ,@rules)))))))
+       (match form
+         ((_ name . rules)
+          `(define ,name (wrap-routes (list ,@(map expand-route rules)))))))))
 
   (define listener (make-parameter (void)))
 
@@ -123,4 +139,3 @@
   (define (run router #!key (port 3000))
     (listener (tcp-listen port))
     (accept-loop router)))
-

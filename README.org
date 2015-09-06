@@ -6,5 +6,6 @@
 (use onion)
 
 (defroutes app
-  (get "/hello/:name" req ()))
+  (GET "/" "work in progress")
+  (GET "/hello/:name" (name) (string-append "hello " name)))
 #+END_SRC
