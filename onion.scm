@@ -1,6 +1,6 @@
 
 (module onion
-    (defroutes run wrap-routes body-parser static)
+    (defroutes run wrap-routes body-parser static alist-get-in)
 
   (import scheme chicken)
 
@@ -10,6 +10,13 @@
     (let ((response (alist-ref 'response req)))
       (response-status-set! response 'not-found)
       "Page Not Found"))
+
+  (define (alist-get-in keys alist)
+    (if (and (pair? alist) (pair? keys))
+        (if (= 1 (length keys))
+            (alist-ref (car keys) alist)
+            (alist-get-in (cdr keys) (alist-ref (car keys) alist)))
+        #f))
 
   (begin-for-syntax
 
@@ -28,22 +35,22 @@
                `((param . ,(string->symbol (substring/shared pattern 1))))
                `((static . ,pattern))))))
 
-   (define (deep-let-1 pattern transformer)
+   (define (deep-let-1 pattern path)
      (if (pair? pattern)
          (let ((p (car pattern)))
            (if (keyword? p)
                (let ((p (string->symbol (keyword->string p))))
                  (append
-                  (deep-let-1 (cadr pattern) `(compose (lambda (alist) (if alist (alist-ref ',p alist) #f)) ,transformer))
-                  (deep-let-1 (cddr pattern) transformer)))
+                  (deep-let-1 (cadr pattern) (cons p path))
+                  (deep-let-1 (cddr pattern) path)))
                (if (symbol? p)
-                   (append `((,p . (compose (lambda (alist) (if alist (alist-ref ',p alist) #f)) ,transformer)))
-                           (deep-let-1 (cdr pattern) transformer))
+                   (append `((,p . (lambda (alist) (alist-get-in ',(fold cons '() (cons p path)) alist))))
+                           (deep-let-1 (cdr pattern) path))
                    '())))
          '()))
 
    (define (deep-let pattern datum exps)
-     (let ((vars (deep-let-1 pattern 'identity)))
+     (let ((vars (deep-let-1 pattern '())))
        `(apply (lambda ,(map car vars) ,@exps)
                (map (lambda (transform) (transform ,datum)) (list ,@(map cdr vars))))))
 
@@ -100,15 +107,18 @@
               (route-dispatch url (cdr rules))))
         #f))
 
-  (define (render-response res result)
-    (write-response res)
-    (cond ((string? result)
-           (write-string result #f (response-port res)))
-          ((list? result)
-           (write-json result (response-port res)))
-          ((port? result)
-           (copy-port result (response-port res))))
-    (finish-response-body res))
+  (define (render-response handler)
+    (lambda (req)
+      (let ((result (handler req))
+            (res (alist-ref 'response req)))
+        (write-response res)
+        (cond ((string? result)
+               (write-string result #f (response-port res)))
+              ((or (list? result) (vector? result))
+               (write-json result (response-port res)))
+              ((port? result)
+               (copy-port result (response-port res))))
+        (finish-response-body res))))
 
   (define (wrap-routes rules)
     (let ((rules (group-rules rules)))
@@ -118,9 +128,8 @@
                (handler
                 (or (route-dispatch path (hash-table-ref/default rules method '()))
                     `(() ,default-handler-404))))
-          (let* ((req (cons `(params . ,(car handler)) req))
-                 (result ((cadr handler) (append (car handler) req))))
-            (render-response (alist-ref 'response req) result))))))
+          (let* ((req (cons `(params . ,(car handler)) req)))
+            ((cadr handler) (append (car handler) req)))))))
 
   (define-syntax defroutes
     (er-macro-transformer
@@ -144,10 +153,16 @@
                     (else '()))))
         (handler (append `((body . ,body)) req)))))
 
-  (define (static handler root)
-    (lambda (req)
-      (let ((path (alist-ref 'path req)))
-        (open-input-file (string-append root path)))))
+  (define (static handler prefix #!key root)
+    (let ((prefix-shift (string-length prefix)))
+      (lambda (req)
+        (let ((path (alist-ref 'path req)))
+          (if (string-prefix? prefix path)
+              (let ((realpath (string-append root (substring/shared path prefix-shift))))
+                (if (file-exists? realpath)
+                    (open-input-file realpath)
+                    (default-handler-404 req)))
+              (handler req))))))
 
   (define listener (make-parameter (void)))
 
@@ -160,4 +175,4 @@
 
   (define (run handler #!key (port 3000))
     (listener (tcp-listen port))
-    (accept-loop handler)))
+    (accept-loop (render-response handler))))
