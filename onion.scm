@@ -1,11 +1,15 @@
 
 (module onion
-    (defroutes run wrap-routes)
+    (defroutes run wrap-routes body-parser static)
 
   (import scheme chicken)
 
-  (use tcp6 intarweb uri-common posix srfi-13 srfi-69 medea srfi-1 extras data-structures)
+  (use tcp6 intarweb uri-common posix srfi-13 srfi-69 medea srfi-1 extras data-structures ports)
 
+  (define (default-handler-404 req)
+    (let ((response (alist-ref 'response req)))
+      (response-status-set! response 'not-found)
+      "Page Not Found"))
 
   (begin-for-syntax
 
@@ -46,7 +50,9 @@
    (define (expand-route form)
      (match form
        ((method url destruct handler)
-        `(list ',method ',(parse-url url) (lambda (req) ,(deep-let destruct 'req (list handler)))))
+        (if (pair? destruct)
+            `(list ',method ',(parse-url url) (lambda (req) ,(deep-let destruct 'req (list handler))))
+            `(list ',method ',(parse-url url) (lambda (,destruct) ,handler))))
        ((method url handler)
         `(list ',method ',(parse-url url) (lambda (req) ,handler))))))
 
@@ -69,9 +75,6 @@
                         #f)))))
         (if (= 0 (string-length url)) params #f))) 
 
-  (define (body-parser headers body)
-    #f)
-
   (define (prep-request in out)
     (let* ((request (read-request in))
            (uri (request-uri request)))
@@ -79,9 +82,8 @@
         (query . ,(uri-query uri))
         (headers . ,(request-headers request))
         (method . ,(request-method request))
-        (response . ,(make-response port: out))
-        (output . ,out)
-        (input . ,in))))
+        (request . ,request)
+        (response . ,(make-response port: out)))))
 
   (define (group-rules rules)
     (fold (lambda (rule ht)
@@ -98,27 +100,27 @@
               (route-dispatch url (cdr rules))))
         #f))
 
+  (define (render-response res result)
+    (write-response res)
+    (cond ((string? result)
+           (write-string result #f (response-port res)))
+          ((list? result)
+           (write-json result (response-port res)))
+          ((port? result)
+           (copy-port result (response-port res))))
+    (finish-response-body res))
+
   (define (wrap-routes rules)
     (let ((rules (group-rules rules)))
       (lambda (req)
         (let* ((path (alist-ref 'path req))
                (method (alist-ref 'method req))
-               (output (alist-ref 'output req))
                (handler
-                (begin
-                  ;; (print (hash-table->alist rules))
-                  (route-dispatch path (hash-table-ref rules method)))))
-          (if handler
-              (begin
-                (let* ((req (cons `(params . ,(car handler)) req))
-                       (res (alist-ref 'response req))
-                       (result ((cadr handler) (append (car handler) req))))
-                  ;; (print result)
-                  (write-response res)
-                  (if (string? result)
-                      (write-string result #f output)
-                      (write-string (json->string result) #f output))
-                  (finish-response-body res))))))))
+                (or (route-dispatch path (hash-table-ref/default rules method '()))
+                    `(() ,default-handler-404))))
+          (let* ((req (cons `(params . ,(car handler)) req))
+                 (result ((cadr handler) (append (car handler) req))))
+            (render-response (alist-ref 'response req) result))))))
 
   (define-syntax defroutes
     (er-macro-transformer
@@ -127,15 +129,35 @@
          ((_ name . rules)
           `(define ,name (wrap-routes (list ,@(map expand-route rules)))))))))
 
+  (define (body-parser handler #!optional content-types)
+    (lambda (req)
+      (let* ((headers (alist-ref 'headers req))
+             (content-type (header-value 'content-type headers))
+             (content-length (header-value 'content-length headers))
+             (input (request-port (alist-ref 'request req)))
+             (body (case content-type
+                    ((application/json)
+                     (read-json (read-string content-length input)
+                                consume-trailing-whitespace: #f))
+                    ((application/x-www-form-urlencoded)
+                     (form-urldecode (read-string content-length input)))
+                    (else '()))))
+        (handler (append `((body . ,body)) req)))))
+
+  (define (static handler root)
+    (lambda (req)
+      (let ((path (alist-ref 'path req)))
+        (open-input-file (string-append root path)))))
+
   (define listener (make-parameter (void)))
 
-  (define (accept-loop router)
+  (define (accept-loop handler)
     (let-values (((in out) (tcp-accept (listener))))
-      (router (prep-request in out))
+      (handler (prep-request in out))
       (close-input-port in)
       (close-output-port out)
-      (accept-loop router)))
+      (accept-loop handler)))
 
-  (define (run router #!key (port 3000))
+  (define (run handler #!key (port 3000))
     (listener (tcp-listen port))
-    (accept-loop router)))
+    (accept-loop handler)))

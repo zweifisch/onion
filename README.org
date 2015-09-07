@@ -8,4 +8,8 @@
 (defroutes app
   (GET "/" "work in progress")
   (GET "/hello/:name" (name) (string-append "hello " name)))
+
+(mount "/public" (static "/static"))
+
+(run app port:3000)
 #+END_SRC
