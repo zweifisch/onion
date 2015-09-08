@@ -4,7 +4,7 @@
 
   (import scheme chicken)
 
-  (use tcp6 intarweb uri-common posix srfi-13 srfi-69 medea srfi-1 extras data-structures ports)
+  (use tcp6 intarweb uri-common posix srfi-13 srfi-69 medea srfi-1 extras data-structures ports multipart-form-data)
 
   (define (default-handler-404 req)
     (let ((response (alist-ref 'response req)))
@@ -123,18 +123,21 @@
                (begin
                  (set-content-type-if-missing res 'text/html)
                  (write-response res)
-                 (write-string result #f (response-port res))))
+                 (write-string result #f (response-port res))
+                 (finish-response-body res)))
               ((or (list? result) (vector? result))
                (begin
                  (set-content-type-if-missing res 'application/json)
                  (write-response res)
-                 (write-json result (response-port res))))
+                 (write-json result (response-port res))
+                 (finish-response-body res)))
               ((port? result)
                (begin
                  (set-content-type-if-missing res 'application/octet-stream)
                  (write-response res)
-                 (copy-port result (response-port res)))))
-        (finish-response-body res))))
+                 (copy-port result (response-port res))
+                 (finish-response-body res)))
+              (else (write-response res))))))
 
   (define (wrap-routes rules)
     (let ((rules (group-rules rules)))
@@ -159,14 +162,17 @@
       (let* ((headers (alist-ref 'headers req))
              (content-type (header-value 'content-type headers))
              (content-length (header-value 'content-length headers))
-             (input (request-port (alist-ref 'request req)))
+             (request (alist-ref 'request req))
+             (input (request-port request))
              (body (case content-type
                     ((application/json)
                      (read-json (read-string content-length input)
                                 consume-trailing-whitespace: #f))
                     ((application/x-www-form-urlencoded)
                      (form-urldecode (read-string content-length input)))
-                    (else '()))))
+                    ((multipart/form-data)
+                     (read-multipart-form-data request))
+                    (else input))))
         (handler (append `((body . ,body)) req)))))
 
   (define (static handler prefix #!key root)
