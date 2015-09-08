@@ -107,17 +107,33 @@
               (route-dispatch url (cdr rules))))
         #f))
 
+  (define (set-content-type-if-missing response content-type)
+    (let ((headers (response-headers response)))
+      (unless (header-value 'content-type headers)
+        (response-headers-set!
+         response
+         (update-header-contents
+          'content-type `(content-type #(,content-type ())) headers)))))
+
   (define (render-response handler)
     (lambda (req)
       (let ((result (handler req))
             (res (alist-ref 'response req)))
-        (write-response res)
         (cond ((string? result)
-               (write-string result #f (response-port res)))
+               (begin
+                 (set-content-type-if-missing res 'text/html)
+                 (write-response res)
+                 (write-string result #f (response-port res))))
               ((or (list? result) (vector? result))
-               (write-json result (response-port res)))
+               (begin
+                 (set-content-type-if-missing res 'application/json)
+                 (write-response res)
+                 (write-json result (response-port res))))
               ((port? result)
-               (copy-port result (response-port res))))
+               (begin
+                 (set-content-type-if-missing res 'application/octet-stream)
+                 (write-response res)
+                 (copy-port result (response-port res)))))
         (finish-response-body res))))
 
   (define (wrap-routes rules)
