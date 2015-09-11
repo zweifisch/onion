@@ -1,5 +1,12 @@
-((files "onion.setup"
-        "onion.scm")
- (licence "BSD")
+((licence "BSD")
  (author "Feng Zhou")
+ (repo "https://github.com/zweifisch/onion")
+ (category web)
+ (depends hahn
+          matchable
+          tcp-server
+          intarweb
+          medea
+          multipart-form-data
+          setup-helper)
  (synopsis "http middleware"))

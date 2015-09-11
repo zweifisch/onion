@@ -4,7 +4,7 @@
 
   (import scheme chicken)
 
-  (use tcp6 intarweb uri-common posix srfi-13 srfi-69 medea srfi-1 extras data-structures ports multipart-form-data)
+  (use tcp tcp-server intarweb uri-common posix srfi-13 srfi-69 medea srfi-1 extras data-structures ports multipart-form-data)
 
   (define (default-handler-404 req)
     (let ((response (alist-ref 'response req)))
@@ -115,30 +115,6 @@
          (update-header-contents
           'content-type `(content-type #(,content-type ())) headers)))))
 
-  (define (render-response handler)
-    (lambda (req)
-      (let ((result (handler req))
-            (res (alist-ref 'response req)))
-        (cond ((string? result)
-               (begin
-                 (set-content-type-if-missing res 'text/html)
-                 (write-response res)
-                 (write-string result #f (response-port res))
-                 (finish-response-body res)))
-              ((or (list? result) (vector? result))
-               (begin
-                 (set-content-type-if-missing res 'application/json)
-                 (write-response res)
-                 (write-json result (response-port res))
-                 (finish-response-body res)))
-              ((port? result)
-               (begin
-                 (set-content-type-if-missing res 'application/octet-stream)
-                 (write-response res)
-                 (copy-port result (response-port res))
-                 (finish-response-body res)))
-              (else (write-response res))))))
-
   (define (wrap-routes rules)
     (let ((rules (group-rules rules)))
       (lambda (req)
@@ -151,50 +127,24 @@
             ((cadr handler) (append (car handler) req)))))))
 
   (define-syntax defroutes
+    @("defroutes"
+      (@example
+       "param handling"
+       (defroutes app
+         (GET "/hello/:name" (name) (string-append "hello " name)))))
     (er-macro-transformer
      (lambda (form rename compare)
        (match form
          ((_ name . rules)
           `(define ,name (wrap-routes (list ,@(map expand-route rules)))))))))
 
-  (define (body-parser handler #!optional content-types)
-    (lambda (req)
-      (let* ((headers (alist-ref 'headers req))
-             (content-type (header-value 'content-type headers))
-             (content-length (header-value 'content-length headers))
-             (request (alist-ref 'request req))
-             (input (request-port request))
-             (body (case content-type
-                    ((application/json)
-                     (read-json (read-string content-length input)
-                                consume-trailing-whitespace: #f))
-                    ((application/x-www-form-urlencoded)
-                     (form-urldecode (read-string content-length input)))
-                    ((multipart/form-data)
-                     (read-multipart-form-data request))
-                    (else input))))
-        (handler (append `((body . ,body)) req)))))
+  (include "onion-middlewares")
 
-  (define (static handler prefix #!key root)
-    (let ((prefix-shift (string-length prefix)))
-      (lambda (req)
-        (let ((path (alist-ref 'path req)))
-          (if (string-prefix? prefix path)
-              (let ((realpath (string-append root (substring/shared path prefix-shift))))
-                (if (file-exists? realpath)
-                    (open-input-file realpath)
-                    (default-handler-404 req)))
-              (handler req))))))
-
-  (define listener (make-parameter (void)))
-
-  (define (accept-loop handler)
-    (let-values (((in out) (tcp-accept (listener))))
-      (handler (prep-request in out))
-      (close-input-port in)
-      (close-output-port out)
-      (accept-loop handler)))
-
-  (define (run handler #!key (port 3000))
-    (listener (tcp-listen port))
-    (accept-loop (render-response handler))))
+  (define (run handler #!key (port 3000) (maxc 10000))
+    (let ((handler (render-response handler)))
+      ((make-tcp-server
+        (tcp-listen port)
+        (lambda ()
+          (handler
+           (prep-request (current-input-port) (current-output-port))))
+        maxc)))))

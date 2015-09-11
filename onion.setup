@@ -1,7 +1,10 @@
-(compile -s -O3 -d1 "onion.scm" -j onion)
-(compile -s -O3 -d0 "onion.import.scm")
+(use hahn setup-helper-mod)
 
-(install-extension
+(verify-extension-name "onion")
+
+(setup-shared-extension-module
  'onion
- '("onion.so" "onion.import.so")
- '((version 0.0.1)))
+ (extension-version "0.0.1")
+ compile-options: '(-X hahn))
+
+(run-hahn -o onion.wiki onion.scm)

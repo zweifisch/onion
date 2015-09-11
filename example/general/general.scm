@@ -6,6 +6,7 @@
   (GET "/query" (query: (page size)) `#(,page ,size))
   (GET "/query-dump" (query) query)
   (POST "/body" (body) body)
+  (GET "/sleep" (thread-sleep! 1))
   (GET "/hello/:name" (name) (string-append "hello " name)))
 
 (run (-> app body-parser (static "/public" root: "./public")))
